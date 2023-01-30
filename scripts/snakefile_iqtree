@@ -1,0 +1,67 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+####source /shared/ifbstor1/software/miniconda/etc/profile.d/conda.sh
+####conda activate phyluce-1.7.0 
+####module load snakemake r/4.1.0 iqtree
+####srun -p fast --cpus-per-task=32 --mem 16GB snakemake --snakefile snakefile_iqtree --cores 32 --directory busco_qslWorkerLineage_snake --config samplesList=qslWorkerLineage seqType=busco
+#### seqType - busco | phasedH0 | phasedH01 | ambiguous | mitogenome
+thread=12
+
+print(config["seqType"])
+print(config["samplesList"])
+path=workflow.basedir + "/"
+print(path)
+rule all:
+    input:
+        "geneTrees.treefile",
+        "spTree.treefile",
+        "concord.cf.tree",
+
+### prepare fasta for phyluce, run phyluce and customized script to filter alignments
+rule alignments:
+    input:
+        samples = path + config["samplesList"] + ".txt",
+        script = path + "runAlignments.R",
+    params:
+        seqType = config["seqType"], ### busco (consensus), ambiguous calls, phased calls
+        Nfil = 0.5, ### to filter samples to 50%
+        bpMin = 350,  ### minimum length for a locus to be considered
+        gapsPp = 0.25, ### minimum proportion of gaps across whole alignment?
+    output:
+        "stats.csv"
+    #threads: int(thread)
+    shell:
+        """Rscript {input.script} --input {input.samples} --seqType {params.seqType} --Nfil {params.Nfil} --bpMin {params.bpMin} --gapsPp {params.gapsPp}"""
+
+### run iqtree
+rule iqtree_spTree:
+    input: 
+        stats = "stats.csv", #just here to allow for order of rules
+    output: "spTree.treefile",
+    params:
+        dna = "phyluce/alignedFiltered/",
+    #threads: int(thread)
+    shell:
+        "iqtree -s {params.dna} -bb 1000 -T AUTO --prefix spTree"
+
+rule iqtree_geneTrees:
+    input: 
+        stats = "stats.csv",
+    params:
+        dna = "phyluce/alignedFiltered/",
+    output: "geneTrees.treefile",
+    #threads: int(thread)
+    shell:
+        "iqtree -S {params.dna} -T 1 --prefix geneTrees"
+
+rule iqtree_concord:
+    input:
+        t = "spTree.treefile",
+        g = "geneTrees.treefile",
+    params:
+        dna = "phyluce/alignedFiltered/",
+    output: "concord.cf.tree",
+    #threads: int(thread)
+    shell:
+        "iqtree -t {input.t} --gcf {input.g} -s {params.dna} --scf 100 --prefix concord"

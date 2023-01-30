@@ -1,0 +1,66 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+####module load snakemake samtools bcftools vcftools
+####srun -p fast --cpus-per-task=48 --mem 50GB snakemake --snakefile snakefile_VCFfiltering --cores 48 --directory messorVCFs
+
+thread=48
+
+rule all:
+    input:
+        "MessorPairs3noM.vcf.gz",
+        "MessorPairs3noM_qual20dp10.vcf.gz",
+        "MessorPairs3noM_qual20dp10bi.vcf.gz",
+        "MessorPairs3noM_qual20dp10biNoIndelMAF0.1Miss0.5.recode.vcf",
+        "MessorPairs3noM_qual20dp10biNoIndelMAF0.1Miss0.5.012"
+
+
+###########################################################################
+
+rule bcftools_merge:
+    input:
+        "../vcfList"
+    output:
+        "MessorPairs3noM.vcf.gz"
+    threads: int(thread)
+    shell:
+        """bcftools merge -l {input} -m all --threads {threads} -o {output};"""
+
+## -m, --merge - allow multiallelic records for <snps|indels|both|all|none|id> [both]
+
+###########################################################################
+
+rule bcftools_filter:
+    input:
+        "MessorPairs3noM.vcf.gz"
+    output:
+        outTemp="MessorPairs3noM_qual20dp10.vcf.gz",
+        outF="MessorPairs3noM_qual20dp10bi.vcf.gz",
+    threads: int(thread)
+    shell:
+        "bcftools filter --threads {threads} -s LowQual -e '%QUAL<20 && DP<10' -Oz -o {output.outTemp} {input};"
+        "bcftools view --threads {threads} -m2 -M2 -v snps {output.outTemp} -f PASS -Oz  -o {output.outF};"
+
+##-s, --soft-filter - annotate FILTER column with <string> or unique filter name ("Filter%d") made up by the program ("+")
+##-e, --exclude - exclude sites for which the expression is true
+## -m2 -M2 -v snps to filter biallelic snps
+
+rule vcftools_filter:
+    input:
+        "MessorPairs3noM_qual20dp10bi.vcf.gz"
+    output:
+        out1="MessorPairs3noM_qual20dp10biNoIndelMAF0.1Miss0.5.recode.vcf",
+        out2="MessorPairs3noM_qual20dp10biNoIndelMAF0.1Miss0.5.012.indv",
+        out3="MessorPairs3noM_qual20dp10biNoIndelMAF0.1Miss0.5.012.pos",
+        out4="MessorPairs3noM_qual20dp10biNoIndelMAF0.1Miss0.5.012"
+    params:
+        "MessorPairs3noM_qual20dp10biNoIndelMAF0.1Miss0.5"
+    shell:
+        "vcftools --gzvcf {input} --remove-indels --maf 0.1 --max-missing 0.5 --recode --temp temp --out {params};"
+        "vcftools --gzvcf {output.out1} --missing-indv --out {params};"
+        "vcftools --gzvcf {output.out1} --012 --temp temp  --out {params}"
+
+##--012 - This  option  outputs  the genotypes as a large matrix and in 3 files
+
+
+

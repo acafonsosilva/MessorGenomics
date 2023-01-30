@@ -1,0 +1,47 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+####source /shared/ifbstor1/software/miniconda/etc/profile.d/conda.sh
+####conda activate phyluce-1.7.0 
+####module load snakemake r/4.1.0 raxml
+####srun -p fast --cpus-per-task=8 --mem 16GB snakemake --snakefile snakefile_raxml --cores 8 --directory allNoMaleHybrid_phasedH0_concatenatedRAxML --config samplesList=allNoMaleHybrid seqType=phasedH0 
+#### seqType - busco | phasedH0 | phasedH01 | ambiguous | mitogenome
+thread=8
+outgroups='SRR4292897,SRR4292898'
+
+print(config["seqType"])
+print(config["samplesList"])
+path=workflow.basedir + "/"
+print(path)
+rule all:
+    input:
+        "stats.csv",
+        "RAxML_bipartitions." + config["samplesList"] + "_" + config["seqType"]
+
+### prepare fasta for phyluce, run phyluce and customized script to filter alignments
+rule alignments:
+    input:
+        samples = path + config["samplesList"] + ".txt",
+        script = path + "runAlignments.R",
+    params:
+        seqType = config["seqType"], ### busco (consensus), ambiguous calls, phased calls
+        Nfil = 0.5, ### to filter samples to 50%
+        bpMin = 350,  ### minimum length for a locus to be considered
+        gapsPp = 0.25, ### minimum proportion of gaps across whole alignment?
+    output:
+        "stats.csv"
+    threads: int(thread)
+    shell:
+        """Rscript {input.script} --input {input.samples} --seqType {params.seqType} --Nfil {params.Nfil} --bpMin {params.bpMin} --gapsPp {params.gapsPp}"""
+
+rule RAxML:
+    input: 
+        stats = "stats.csv", #just here to allow for order of rules
+    params: 
+        outgroup=outgroups,
+        dna = "concatenated.fasta",
+        out = config["samplesList"] + "_" + config["seqType"]
+    output: "RAxML_bipartitions." + config["samplesList"] + "_" + config["seqType"],
+    threads: int(thread)
+    shell:
+        "raxmlHPC-PTHREADS-AVX2  -m GTRCAT -f a -o {params.outgroup} -N autoMRE -x 1234 -p 1234 -T {threads} -s {params.dna} -n {params.out}"

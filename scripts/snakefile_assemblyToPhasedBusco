@@ -1,0 +1,143 @@
+#!/usr/bin/env python
+## conda activate busco3
+## module load snakemake bwa samtools pilon
+####srun -p fast --cpus-per-task=8 --mem 16GB snakemake --snakefile snakefile_assemblyToPhasedBusco --cores 8 --directory Mtar_busco_phased --config assemblyPath=/shared/projects/messor_wgs/assemblies/final_assemblies/Mtar_wtdbg2_polca_nextpolish_RagTagScafpolca_TGSpolcaNextpolish.fasta pacbio=/shared/projects/royalmess_dils/genomeAssemblies/pacbio_fastx/Mtar_m54217_201229_071552.fastq.gz ID=Mtar
+
+##Maeg_m54217_201228_110217.fastq.gz | Mibe_m54217_201226_103221.fastq.gz | Mtar_m54217_201229_071552.fastq.gz
+
+rule all:
+    input:
+        expand("busco/{sample}_busco.fasta", sample=config["ID"]),
+        expand("phasedFastas/{sample}.0.fasta", sample=config["ID"]),
+        expand("phasedFastas/{sample}.1.fasta", sample=config["ID"])
+
+rule runBusco:
+    input:
+        config["assemblyPath"]
+    output:
+        "busco/run_" + config["ID"] + "_busco"
+    shell:
+        "run_busco -i {input} -o {params} -c {threads} -m geno -l /shared/home/asilva/.conda/envs/busco3/bin/hymenoptera_odb9 -sp camponotus_floridanus --blast_single_core;"
+        "conda deactivate"
+
+LOCI, = glob_wildcards("busco/run_" + config["ID"] + "_busco/single_copy_busco_sequences/{loci}.fna")
+
+rule mergeBusco_index:
+    input:
+        expand("busco/run_" + config["ID"] + "_busco/single_copy_busco_sequences/{loci}.fna", loci=LOCI)
+    output:
+        "busco/" + config["ID"] + "_busco.fasta"
+    shell:
+        #"cat {input} > {output};"
+        #"sed -i 's/:\/shared.*fasta//' {output};"
+        #"""awk "/^>/{f=!d[\$1];d[\$1]=1}f" {output} > temp && mv tmp {output};"""
+        """cat {input} | sed 's/:\/shared.*fasta//' | awk "/^>/{f=!d[$1];d[$1]=1}f" > {output};"""
+        "bwa index {output}"
+
+rule bwa_map:
+    input:
+        busco="busco/" + config["ID"] + "_busco.fasta",
+        pacbio=config["pacbio"],
+    output:
+        temp("mapped_reads/{sample}.unsorted.bam")
+    params:
+        rg=r"@RG\tID:{sample}\tSM:{sample}"
+    threads: 24
+    shell:
+        "bwa mem -R '{params.rg}' -t {threads} {input.busco} {input.pacbio} | samtools view -Sb - > {output}"
+
+rule samtools_sort_by_read_name:
+    input:
+        "mapped_reads/{sample}.unsorted.bam"
+    output:
+        temp("mapped_reads/{sample}.sorted.rn.bam")
+    threads: 24
+    shell:
+        "samtools sort -@ {threads} -n -O bam -o {output} {input}"
+
+
+rule samtools_fixmate:
+    input:
+        "mapped_reads/{sample}.sorted.rn.bam"
+    output:
+        temp("mapped_reads/{sample}.sorted.rn.fxm.bam")
+    threads: 24
+    # note that we're adding mate score tag here (-m)
+    shell:
+        "samtools fixmate -@ {threads} -m {input} {output}"
+
+rule samtools_sort:
+    input:
+        "mapped_reads/{sample}.sorted.rn.fxm.bam"
+    output:
+        temp("mapped_reads/{sample}.fxm.sorted.bam")
+    threads: 24
+    shell:
+        "samtools sort -@ {threads} -O bam -o {output} {input}"
+
+
+rule samtools_markdupes:
+    input:
+        "mapped_reads/{sample}.fxm.sorted.bam"
+    output:
+        temp("mapped_reads/{sample}.fxm.sorted.md.bam")
+    threads: 24
+    shell:
+        "samtools markdup -@ {threads} {input} {output}"
+
+
+####################### phasing #######################
+
+
+rule phase_bams:
+    input:
+        busco = "busco/" + config["ID"] + "_busco.fasta",
+        bam = "mapped_reads/{sample}.fxm.sorted.md.bam",
+    params:
+        config["ID"]
+    output:
+        temp("{sample}.0.bam"),
+        temp("{sample}.1.bam"),
+    threads: 24
+    shell:
+        "samtools phase -b {params} --reference {input.busco} {input.bam}"
+
+rule index_bams_0:
+    input:
+        "{sample}.0.bam"
+    output:
+        "{sample}.0.bam.bai"
+    threads: 24
+    shell:
+        "samtools index -@ {threads} {input} {output}"
+
+rule index_bams_1:
+    input:
+        "{sample}.1.bam"
+    output:
+        "{sample}.1.bam.bai"
+    threads: 24
+    shell:
+        "samtools index -@ {threads} {input} {output}"
+
+rule pilon_allele_0:
+    input:
+        busco = "busco/" + config["ID"] + "_busco.fasta",
+        bam = "{sample}.0.bam",
+    params:
+        config["ID"] + ".0"
+    output:
+        "phased_fastas/{sample}.0.fasta"
+    shell:
+        "pilon --changes --fix snps,indels --minqual 10 --mindepth 5 --nostrays --genome {input.busco} --bam {input.bam} --outdir fastas --output {params}"
+
+rule pilon_allele_1:
+    input:
+        busco = "busco/" + config["ID"] + "_busco.fasta",
+        bam = "{sample}.1.bam",
+    params:
+        config["ID"] + ".1"
+    output:
+        "phasedFastas/{sample}.1.fasta"
+    shell:
+        "pilon --changes --fix snps,indels --minqual 10 --mindepth 5 --nostrays --genome {input.busco} --bam {input.bam} --outdir fastas --output {params}"
